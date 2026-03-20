@@ -1,0 +1,151 @@
+name: Enterprise AI Agent CI-CD
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+
+# =========================
+# 🔹 DEV DEPLOY (AUTO)
+# =========================
+  deploy-dev:
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # 🐍 Setup Python
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.10
+
+    # ⚡ Cache dependencies
+    - name: Cache pip
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('lambda/requirements.txt') }}
+
+    # 📦 Build Lambda
+    - name: Build Lambda
+      run: |
+        cd lambda
+        pip install -r requirements.txt -t .
+        zip -r ../lambda.zip .
+
+    # 🔐 AWS Auth (OIDC)
+    - name: Configure AWS
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role
+        aws-region: ${{ env.AWS_REGION }}
+
+    # ⚙️ Terraform Setup
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+
+    # 🔄 Init
+    - name: Terraform Init
+      run: terraform -chdir=terraform init
+
+    # 🔍 Validate
+    - name: Terraform Validate
+      run: |
+        terraform -chdir=terraform fmt -check
+        terraform -chdir=terraform validate
+
+    # 📊 Plan
+    - name: Terraform Plan (DEV)
+      run: terraform -chdir=terraform plan \
+           -var-file=envs/dev.tfvars \
+           -out=tfplan
+
+    # 🚀 Apply
+    - name: Terraform Apply (DEV)
+      run: terraform -chdir=terraform apply -auto-approve tfplan
+
+    # 🔵 Deploy via CodeDeploy
+    - name: CodeDeploy (DEV)
+      run: |
+        aws deploy create-deployment \
+          --application-name ai-agent-app-dev \
+          --deployment-group-name ai-agent-group-dev
+
+# =========================
+# 🔹 STAGING (APPROVAL)
+# =========================
+  deploy-staging:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role
+        aws-region: ${{ env.AWS_REGION }}
+
+    - uses: hashicorp/setup-terraform@v2
+
+    - run: terraform -chdir=terraform init
+
+    - name: Plan STAGING
+      run: terraform -chdir=terraform plan \
+           -var-file=envs/staging.tfvars \
+           -out=tfplan
+
+    - name: Apply STAGING
+      run: terraform -chdir=terraform apply -auto-approve tfplan
+
+    - name: CodeDeploy (STAGING)
+      run: |
+        aws deploy create-deployment \
+          --application-name ai-agent-app-staging \
+          --deployment-group-name ai-agent-group-staging
+
+# =========================
+# 🔹 PROD (STRICT APPROVAL)
+# =========================
+  deploy-prod:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role
+        aws-region: ${{ env.AWS_REGION }}
+
+    - uses: hashicorp/setup-terraform@v2
+
+    - run: terraform -chdir=terraform init
+
+    - name: Plan PROD
+      run: terraform -chdir=terraform plan \
+           -var-file=envs/prod.tfvars \
+           -out=tfplan
+
+    - name: Apply PROD
+      run: terraform -chdir=terraform apply -auto-approve tfplan
+
+    - name: CodeDeploy (PROD)
+      run: |
+        aws deploy create-deployment \
+          --application-name ai-agent-app-prod \
+          --deployment-group-name ai-agent-group-prod

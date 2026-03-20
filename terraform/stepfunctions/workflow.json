@@ -1,0 +1,10 @@
+{
+  "StartAt": "ProcessTask",
+  "States": {
+    "ProcessTask": {
+      "Type": "Pass",
+      "Result": "Task completed",
+      "End": true
+    }
+  }
+}
